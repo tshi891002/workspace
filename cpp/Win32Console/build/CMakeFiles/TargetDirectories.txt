@@ -1,3 +1,0 @@
-D:/workspace/cpp/Win32Console/build/CMakeFiles/pingpong.dir
-D:/workspace/cpp/Win32Console/build/CMakeFiles/ALL_BUILD.dir
-D:/workspace/cpp/Win32Console/build/CMakeFiles/ZERO_CHECK.dir
