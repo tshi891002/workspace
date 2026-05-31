@@ -8,6 +8,9 @@
 #include <thread>
 #include <vector>
 
+#include "games/shooter.h"
+#include "common/console_screen.h"
+
 namespace {
 
 // This game uses the Win32 console as a small fixed-size display surface. The
@@ -63,13 +66,7 @@ enum class Mode {
     GameOver
 };
 
-// The Console struct keeps the Win32 console handles together with the
-// off-screen frame buffer. Most drawing helpers only need this one object.
-struct Console {
-    HANDLE output = INVALID_HANDLE_VALUE;
-    HANDLE input = INVALID_HANDLE_VALUE;
-    std::vector<CHAR_INFO> buffer;
-};
+using Console = console_ui::ConsoleScreen;
 
 struct Game {
     Vec2 player;
@@ -87,54 +84,30 @@ bool operator==(Vec2 a, Vec2 b) {
     return a.x == b.x && a.y == b.y;
 }
 
-void SetCursorVisible(HANDLE console, bool visible) {
-    // Console applications normally show a blinking text cursor. This game
-    // renders a full-screen scene, so hiding the cursor prevents it from
-    // appearing as an unrelated visual element inside the playfield.
-    CONSOLE_CURSOR_INFO cursorInfo{};
-    cursorInfo.dwSize = 1;
-    cursorInfo.bVisible = visible ? TRUE : FALSE;
-    SetConsoleCursorInfo(console, &cursorInfo);
-}
-
 void Put(Console& console, int x, int y, wchar_t ch, WORD color = COLOR_NORMAL) {
     // CHAR_INFO is the Win32 console cell type: it stores one Unicode character
     // and one color attribute. All drawing funnels through this helper so the
     // rest of the code can think in x/y coordinates.
-    if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) {
-        return;
-    }
-
-    CHAR_INFO& cell = console.buffer[y * SCREEN_WIDTH + x];
-    cell.Char.UnicodeChar = ch;
-    cell.Attributes = color;
+    console.Put(x, y, ch, color);
 }
 
 void WriteText(Console& console, int x, int y, const std::wstring& text, WORD color = COLOR_NORMAL) {
     // UI labels are still drawn into the frame buffer one cell at a time. This
     // keeps text rendering consistent with ships, bullets, enemies, and borders.
-    for (size_t i = 0; i < text.size(); ++i) {
-        Put(console, x + static_cast<int>(i), y, text[i], color);
-    }
+    console.WriteText(x, y, text, color);
 }
 
 void Clear(Console& console) {
     // Clear only modifies the off-screen buffer. The user sees the new blank
     // frame only after Flush calls WriteConsoleOutputW.
-    CHAR_INFO blank{};
-    blank.Char.UnicodeChar = L' ';
-    blank.Attributes = COLOR_NORMAL;
-    std::fill(console.buffer.begin(), console.buffer.end(), blank);
+    console.Clear();
 }
 
 void Flush(Console& console) {
     // WriteConsoleOutputW copies a rectangular CHAR_INFO buffer to the real
     // console screen buffer. A single full-frame write avoids visible flicker
     // from many small console writes.
-    COORD bufferSize = { SCREEN_WIDTH, SCREEN_HEIGHT };
-    COORD bufferCoord = { 0, 0 };
-    SMALL_RECT writeRegion = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
-    WriteConsoleOutputW(console.output, console.buffer.data(), bufferSize, bufferCoord, &writeRegion);
+    console.Flush();
 }
 
 bool Pressed(int virtualKey) {
@@ -390,33 +363,14 @@ void DrawGame(Console& console, const Game& game) {
 
 }  // namespace
 
-int main() {
+int shooter_game::ShooterGame::Run() {
     // Get the standard console handles. The output handle is used for direct
     // screen-buffer writes, and the input handle is configured so the game can
     // own keyboard behavior while it is running.
     Console console{};
-    console.output = GetStdHandle(STD_OUTPUT_HANDLE);
-    console.input = GetStdHandle(STD_INPUT_HANDLE);
-    if (console.output == INVALID_HANDLE_VALUE || console.input == INVALID_HANDLE_VALUE) {
+    if (!console.Initialize(SCREEN_WIDTH, SCREEN_HEIGHT, true)) {
         return 1;
     }
-
-    console.buffer.resize(SCREEN_WIDTH * SCREEN_HEIGHT);
-
-    // Preserve the user's original input mode. Console games should restore
-    // terminal behavior after exit instead of leaving changed input settings
-    // behind for the next command.
-    DWORD oldInputMode = 0;
-    GetConsoleMode(console.input, &oldInputMode);
-    SetConsoleMode(console.input, ENABLE_WINDOW_INPUT);
-
-    // The console window must fit inside the backing screen buffer. Set the
-    // buffer first, then clamp the visible window to the exact game size.
-    SMALL_RECT windowSize = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
-    COORD bufferSize = { SCREEN_WIDTH, SCREEN_HEIGHT };
-    SetConsoleScreenBufferSize(console.output, bufferSize);
-    SetConsoleWindowInfo(console.output, TRUE, &windowSize);
-    SetCursorVisible(console.output, false);
 
     std::random_device randomDevice;
     std::mt19937 rng(randomDevice());
@@ -440,9 +394,6 @@ int main() {
 
     // Leave the console clean: clear the last frame, restore the text cursor,
     // and put the input mode back to its original value.
-    Clear(console);
-    Flush(console);
-    SetCursorVisible(console.output, true);
-    SetConsoleMode(console.input, oldInputMode);
+    console.Cleanup();
     return 0;
 }

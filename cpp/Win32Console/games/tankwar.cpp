@@ -8,6 +8,9 @@
 #include <thread>
 #include <vector>
 
+#include "games/tankwar.h"
+#include "common/console_screen.h"
+
 namespace {
 
 // Tank War uses the console as a fixed-size grid display. The program renders
@@ -76,14 +79,7 @@ struct Bullet {
     bool fromPlayer = true;
 };
 
-// The Console object owns the Win32 handles and the off-screen frame buffer.
-// Drawing code writes CHAR_INFO cells into buffer; Flush copies buffer to the
-// real console screen buffer.
-struct Console {
-    HANDLE output = INVALID_HANDLE_VALUE;
-    HANDLE input = INVALID_HANDLE_VALUE;
-    std::vector<CHAR_INFO> buffer;
-};
+using Console = console_ui::ConsoleScreen;
 
 struct Game {
     Tank player;
@@ -134,53 +130,29 @@ wchar_t DirectionGlyph(Direction direction) {
     return L'^';
 }
 
-void SetCursorVisible(HANDLE console, bool visible) {
-    // Console apps normally show a blinking text cursor. This game owns the
-    // entire drawing surface, so hiding the cursor prevents it from floating on
-    // top of the battlefield.
-    CONSOLE_CURSOR_INFO cursorInfo{};
-    cursorInfo.dwSize = 1;
-    cursorInfo.bVisible = visible ? TRUE : FALSE;
-    SetConsoleCursorInfo(console, &cursorInfo);
-}
-
 void Put(Console& console, int x, int y, wchar_t ch, WORD color = COLOR_NORMAL) {
     // CHAR_INFO is the basic Win32 console cell: one Unicode character plus one
     // color attribute. Centralizing writes here keeps all drawing bounds-safe.
-    if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) {
-        return;
-    }
-
-    CHAR_INFO& cell = console.buffer[y * SCREEN_WIDTH + x];
-    cell.Char.UnicodeChar = ch;
-    cell.Attributes = color;
+    console.Put(x, y, ch, color);
 }
 
 void WriteText(Console& console, int x, int y, const std::wstring& text, WORD color = COLOR_NORMAL) {
     // Text is drawn into the same frame buffer as tanks and bullets, so labels
     // and game objects are presented together by a single Flush call.
-    for (size_t i = 0; i < text.size(); ++i) {
-        Put(console, x + static_cast<int>(i), y, text[i], color);
-    }
+    console.WriteText(x, y, text, color);
 }
 
 void Clear(Console& console) {
     // Clear prepares the next frame in memory. The visible console is untouched
     // until Flush pushes this buffer to the screen.
-    CHAR_INFO blank{};
-    blank.Char.UnicodeChar = L' ';
-    blank.Attributes = COLOR_NORMAL;
-    std::fill(console.buffer.begin(), console.buffer.end(), blank);
+    console.Clear();
 }
 
 void Flush(Console& console) {
     // WriteConsoleOutputW copies a rectangular CHAR_INFO buffer into the
     // console's screen buffer. One full-frame write avoids the flicker caused by
     // many small cursor-position-and-print operations.
-    COORD bufferSize = { SCREEN_WIDTH, SCREEN_HEIGHT };
-    COORD bufferCoord = { 0, 0 };
-    SMALL_RECT writeRegion = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
-    WriteConsoleOutputW(console.output, console.buffer.data(), bufferSize, bufferCoord, &writeRegion);
+    console.Flush();
 }
 
 bool Pressed(int virtualKey) {
@@ -575,32 +547,14 @@ void DrawGame(Console& console, const Game& game) {
 
 }  // namespace
 
-int main() {
+int tankwar_game::TankWarGame::Run() {
     // Get standard Win32 console handles. The output handle is used for
     // WriteConsoleOutputW; the input handle is configured so gameplay owns
     // keyboard behavior while the program runs.
     Console console{};
-    console.output = GetStdHandle(STD_OUTPUT_HANDLE);
-    console.input = GetStdHandle(STD_INPUT_HANDLE);
-    if (console.output == INVALID_HANDLE_VALUE || console.input == INVALID_HANDLE_VALUE) {
+    if (!console.Initialize(SCREEN_WIDTH, SCREEN_HEIGHT, true)) {
         return 1;
     }
-
-    console.buffer.resize(SCREEN_WIDTH * SCREEN_HEIGHT);
-
-    // Save the original input mode so it can be restored on exit. Console games
-    // should clean up after changing input behavior.
-    DWORD oldInputMode = 0;
-    GetConsoleMode(console.input, &oldInputMode);
-    SetConsoleMode(console.input, ENABLE_WINDOW_INPUT);
-
-    // Windows requires the visible window rectangle to fit inside the screen
-    // buffer, so configure the backing buffer before setting the window size.
-    SMALL_RECT windowSize = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
-    COORD bufferSize = { SCREEN_WIDTH, SCREEN_HEIGHT };
-    SetConsoleScreenBufferSize(console.output, bufferSize);
-    SetConsoleWindowInfo(console.output, TRUE, &windowSize);
-    SetCursorVisible(console.output, false);
 
     std::random_device randomDevice;
     std::mt19937 rng(randomDevice());
@@ -623,9 +577,6 @@ int main() {
     }
 
     // Restore the terminal before returning control to the shell.
-    Clear(console);
-    Flush(console);
-    SetCursorVisible(console.output, true);
-    SetConsoleMode(console.input, oldInputMode);
+    console.Cleanup();
     return 0;
 }

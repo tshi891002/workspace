@@ -5,6 +5,9 @@
 #include <chrono>
 #include <thread>
 
+#include "games/pingpong.h"
+#include "common/console_screen.h"
+
 // This program uses the Win32 console API directly to render a simple
 // ping-pong game in the Windows console. It updates the full screen
 // every frame using a CHAR_INFO buffer and WriteConsoleOutputW, which
@@ -18,56 +21,20 @@ static const wchar_t PADDLE_CHAR = L'|';
 
 struct Vec2 { int x; int y; };
 
-void SetConsoleCursorVisible(HANDLE hConsole, bool visible) {
-    // Hide or show the blinking console cursor. This is purely cosmetic
-    // and keeps the game display from distracting the player.
-    CONSOLE_CURSOR_INFO cursorInfo;
-    cursorInfo.dwSize = 1;
-    cursorInfo.bVisible = visible ? TRUE : FALSE;
-    SetConsoleCursorInfo(hConsole, &cursorInfo);
-}
-
-void WriteConsoleBuffer(HANDLE hConsole, const std::vector<CHAR_INFO>& buffer) {
-    // Write the entire console screen buffer in a single Win32 call.
-    // WriteConsoleOutputW takes the character+attribute buffer and copies it
-    // into the console window region, which is much less splashy than
-    // many individual writes.
-    COORD bufferSize = { SCREEN_WIDTH, SCREEN_HEIGHT };
-    COORD bufferCoord = { 0, 0 };
-    SMALL_RECT writeRegion = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
-    WriteConsoleOutputW(hConsole, buffer.data(), bufferSize, bufferCoord, &writeRegion);
-}
-
-void ClearBuffer(std::vector<CHAR_INFO>& buffer) {
-    // Initialize the screen buffer with blank space and a standard color
-    // attribute. The buffer is reused every frame.
-    CHAR_INFO blankChar;
-    blankChar.Char.UnicodeChar = L' ';
-    blankChar.Attributes = FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_RED;
-    std::fill(buffer.begin(), buffer.end(), blankChar);
-}
-
-int main() {
-    // Get the console output handle for direct Win32 screen rendering.
-    // We use the Windows console API rather than std::cout so we can update
-    // the entire text grid each frame and control character attributes.
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hConsole == INVALID_HANDLE_VALUE) {
+int pingpong_game::PingPongGame::Run() {
+    // ConsoleScreen obtains STD_OUTPUT_HANDLE, resizes the Win32 screen buffer,
+    // hides the caret, and restores the original shell settings when this
+    // session ends. Ping-Pong does not consume queued INPUT_RECORD values, so it
+    // uses output-only initialization and polls physical key state directly.
+    console_ui::ConsoleScreen console;
+    if (!console.Initialize(SCREEN_WIDTH, SCREEN_HEIGHT, false)) {
         return 1;
     }
 
-    // Configure the console window size and buffer size to a fixed resolution.
-    // This ensures the game logic is written against a stable 80x25 display.
-    SMALL_RECT windowSize = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
-    COORD bufferSize = { SCREEN_WIDTH, SCREEN_HEIGHT };
-    SetConsoleScreenBufferSize(hConsole, bufferSize);
-    SetConsoleWindowInfo(hConsole, TRUE, &windowSize);
-    SetConsoleCursorVisible(hConsole, false);
-
     // The screen buffer holds a CHAR_INFO cell for each console position.
     // Each frame we clear it and then write the title, paddles, ball, and score.
-    std::vector<CHAR_INFO> screenBuffer(SCREEN_WIDTH * SCREEN_HEIGHT);
-    ClearBuffer(screenBuffer);
+    std::vector<CHAR_INFO>& screenBuffer = console.buffer;
+    console.Clear();
 
     // Game state: paddle positions, ball position/velocity, and score.
     // Paddles are positioned along the left and right edges of the playfield.
@@ -148,7 +115,7 @@ int main() {
 
         // Clear the frame buffer and draw the next frame from scratch.
         // This is simpler than trying to erase only changed characters.
-        ClearBuffer(screenBuffer);
+        console.Clear();
 
         std::wstring title = L"Win32 Console Ping-Pong";
         std::wstring controls = L"W/S = Left racket, Up/Down = Right racket, Esc = Quit";
@@ -194,14 +161,13 @@ int main() {
         ballCell.Attributes = ballAttr;
 
         // Commit the frame to the console in one write operation.
-        WriteConsoleBuffer(hConsole, screenBuffer);
+        console.Flush();
 
         // Wait a short time before the next frame to control game speed.
         // The fixed delay keeps the ball movement consistent on fast systems.
         std::this_thread::sleep_for(std::chrono::milliseconds(frameDelayMs));
     }
 
-    // Restore the console cursor before exiting so the terminal behaves normally.
-    SetConsoleCursorVisible(hConsole, true);
+    console.Cleanup();
     return 0;
 }

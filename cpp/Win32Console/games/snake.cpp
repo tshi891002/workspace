@@ -8,6 +8,9 @@
 #include <thread>
 #include <vector>
 
+#include "games/snake.h"
+#include "common/console_screen.h"
+
 namespace {
 
 // This Snake implementation treats the Windows console as a fixed-size grid of
@@ -58,15 +61,7 @@ enum class Mode {
     GameOver
 };
 
-// The Console struct groups the Win32 handles and the off-screen frame buffer.
-// The output handle is passed to WriteConsoleOutputW. The input handle is used
-// to configure keyboard input mode and drain queued events. The CHAR_INFO buffer
-// contains every character and color that should appear in the next frame.
-struct Console {
-    HANDLE output = INVALID_HANDLE_VALUE;
-    HANDLE input = INVALID_HANDLE_VALUE;
-    std::vector<CHAR_INFO> buffer;
-};
+using Console = console_ui::ConsoleScreen;
 
 struct Game {
     std::deque<Vec2> snake;
@@ -82,54 +77,30 @@ bool operator==(Vec2 a, Vec2 b) {
     return a.x == b.x && a.y == b.y;
 }
 
-void SetCursorVisible(HANDLE console, bool visible) {
-    // The blinking console cursor belongs to text-entry programs. This game
-    // renders its own cursor-free scene, so hiding it makes the board feel like
-    // a controlled UI surface rather than a stream of printed text.
-    CONSOLE_CURSOR_INFO cursorInfo{};
-    cursorInfo.dwSize = 1;
-    cursorInfo.bVisible = visible ? TRUE : FALSE;
-    SetConsoleCursorInfo(console, &cursorInfo);
-}
-
 void Put(Console& console, int x, int y, wchar_t ch, WORD color = COLOR_NORMAL) {
     // CHAR_INFO represents one console cell: a Unicode character plus the color
     // attribute bits for that cell. The bounds check keeps all drawing helpers
     // safe even if a label or game object would otherwise spill off-screen.
-    if (x < 0 || x >= SCREEN_WIDTH || y < 0 || y >= SCREEN_HEIGHT) {
-        return;
-    }
-
-    CHAR_INFO& cell = console.buffer[y * SCREEN_WIDTH + x];
-    cell.Char.UnicodeChar = ch;
-    cell.Attributes = color;
+    console.Put(x, y, ch, color);
 }
 
 void WriteText(Console& console, int x, int y, const std::wstring& text, WORD color = COLOR_NORMAL) {
     // Text output is still buffer-based. Each character is placed into the next
     // console cell, then Flush copies the entire frame to the real console.
-    for (size_t i = 0; i < text.size(); ++i) {
-        Put(console, x + static_cast<int>(i), y, text[i], color);
-    }
+    console.WriteText(x, y, text, color);
 }
 
 void Clear(Console& console) {
     // Clearing the memory buffer starts a new frame. The actual console window
     // is unchanged until WriteConsoleOutputW is called by Flush.
-    CHAR_INFO blank{};
-    blank.Char.UnicodeChar = L' ';
-    blank.Attributes = COLOR_NORMAL;
-    std::fill(console.buffer.begin(), console.buffer.end(), blank);
+    console.Clear();
 }
 
 void Flush(Console& console) {
     // WriteConsoleOutputW copies a rectangle of CHAR_INFO cells to the console
     // screen buffer. This is the core Win32 rendering API for the game: one
     // batched write per frame avoids flicker from many smaller writes.
-    COORD bufferSize = { SCREEN_WIDTH, SCREEN_HEIGHT };
-    COORD bufferCoord = { 0, 0 };
-    SMALL_RECT writeRegion = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
-    WriteConsoleOutputW(console.output, console.buffer.data(), bufferSize, bufferCoord, &writeRegion);
+    console.Flush();
 }
 
 Vec2 DirectionDelta(Direction direction) {
@@ -351,32 +322,14 @@ void DrawGame(Console& console, const Game& game) {
 
 }  // namespace
 
-int main() {
+int snake_game::SnakeGame::Run() {
     // Get the process-standard console handles. The output handle is required
     // for WriteConsoleOutputW; the input handle is adjusted so the console does
     // not echo typed characters or wait for line-buffered input.
     Console console{};
-    console.output = GetStdHandle(STD_OUTPUT_HANDLE);
-    console.input = GetStdHandle(STD_INPUT_HANDLE);
-    if (console.output == INVALID_HANDLE_VALUE || console.input == INVALID_HANDLE_VALUE) {
+    if (!console.Initialize(SCREEN_WIDTH, SCREEN_HEIGHT, true)) {
         return 1;
     }
-
-    console.buffer.resize(SCREEN_WIDTH * SCREEN_HEIGHT);
-
-    // Save original console modes so the terminal can be restored on exit. This
-    // is polite for console programs that temporarily take over the screen.
-    DWORD oldInputMode = 0;
-    GetConsoleMode(console.input, &oldInputMode);
-    SetConsoleMode(console.input, ENABLE_WINDOW_INPUT);
-
-    // The visible window must fit inside the screen buffer. Setting the buffer
-    // first, then the window rectangle, avoids Win32 size validation failures.
-    SMALL_RECT windowSize = { 0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1 };
-    COORD bufferSize = { SCREEN_WIDTH, SCREEN_HEIGHT };
-    SetConsoleScreenBufferSize(console.output, bufferSize);
-    SetConsoleWindowInfo(console.output, TRUE, &windowSize);
-    SetCursorVisible(console.output, false);
 
     std::random_device randomDevice;
     std::mt19937 rng(randomDevice());
@@ -408,9 +361,6 @@ int main() {
     // Restore console state before exiting. The clear/flush pair removes the
     // last game frame, and the input mode/cursor settings are returned to the
     // values the user had before launching the game.
-    Clear(console);
-    Flush(console);
-    SetCursorVisible(console.output, true);
-    SetConsoleMode(console.input, oldInputMode);
+    console.Cleanup();
     return 0;
 }
